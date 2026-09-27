@@ -47,6 +47,70 @@ def _windows_process_alive(pid: int) -> bool:
         kernel32.CloseHandle(handle)
 
 
+def _windows_child_process(pid: int) -> int | None:
+    """Return the first direct child PID of *pid*, if one exists."""
+    import ctypes
+    from ctypes import wintypes
+
+    th32cs_snapprocess = 0x00000002
+    invalid_handle_value = ctypes.c_void_p(-1).value
+
+    class ProcessEntry32W(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD),
+            ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD),
+            ("th32DefaultHeapID", ctypes.POINTER(wintypes.ULONG)),
+            ("th32ModuleID", wintypes.DWORD),
+            ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD),
+            ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD),
+            ("szExeFile", wintypes.WCHAR * 260),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateToolhelp32Snapshot.argtypes = [
+        wintypes.DWORD,
+        wintypes.DWORD,
+    ]
+    kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel32.Process32FirstW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessEntry32W),
+    ]
+    kernel32.Process32FirstW.restype = wintypes.BOOL
+    kernel32.Process32NextW.argtypes = [
+        wintypes.HANDLE,
+        ctypes.POINTER(ProcessEntry32W),
+    ]
+    kernel32.Process32NextW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    snapshot = kernel32.CreateToolhelp32Snapshot(th32cs_snapprocess, 0)
+    if snapshot == invalid_handle_value:
+        return None
+
+    entry = ProcessEntry32W()
+    entry.dwSize = ctypes.sizeof(entry)
+
+    try:
+        if not kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return None
+
+        while True:
+            if entry.th32ParentProcessID == pid:
+                return int(entry.th32ProcessID)
+
+            if not kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                break
+
+        return None
+    finally:
+        kernel32.CloseHandle(snapshot)
+
+
 def _posix_process_state(pid: int) -> str | None:
     """Return a POSIX process state letter, or ``None`` when unavailable."""
     proc_root = "/proc"

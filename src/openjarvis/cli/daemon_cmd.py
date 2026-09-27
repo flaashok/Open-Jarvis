@@ -14,7 +14,11 @@ import click
 from rich.console import Console
 
 from openjarvis.core.config import DEFAULT_CONFIG_DIR, load_config
-from openjarvis.core.utils import process_alive, terminate_process
+from openjarvis.core.utils import (
+    _windows_child_process,
+    process_alive,
+    terminate_process,
+)
 from openjarvis.security.file_utils import secure_write_json, secure_write_text
 
 _PID_FILE = DEFAULT_CONFIG_DIR / "server.pid"
@@ -28,6 +32,21 @@ _STATE_FILE = DEFAULT_CONFIG_DIR / "server.json"
 def _pid_alive(pid: int) -> bool:
     """Return whether *pid* identifies a running process without signaling it."""
     return process_alive(pid)
+
+
+def _pending_server_pid(pid: int) -> int:
+    """Return the server PID, accounting for the Windows venv launcher."""
+    if sys.platform != "win32":
+        return pid
+
+    deadline = time.monotonic() + 1.0
+    while time.monotonic() < deadline:
+        child_pid = _windows_child_process(pid)
+        if child_pid is not None:
+            return child_pid
+        time.sleep(0.01)
+
+    raise RuntimeError("Unable to determine the Windows server process PID")
 
 
 @contextmanager
@@ -231,7 +250,8 @@ def start(
         **spawn_kwargs,
     )
     try:
-        _write_pid(proc.pid, bind_host, bind_port, ready=False)
+        pending_pid = _pending_server_pid(proc.pid)
+        _write_pid(pending_pid, bind_host, bind_port, ready=False)
     except RuntimeError as exc:
         terminate_process(proc.pid, grace_seconds=10.0)
         raise click.ClickException(str(exc)) from exc
